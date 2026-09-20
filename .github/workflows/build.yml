@@ -2,6 +2,8 @@ name: Build APK
 on:
   push:
   workflow_dispatch:
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -23,3 +25,13 @@ jobs:
         with:
           name: novanet-debug-apk
           path: app/build/outputs/apk/debug/*.apk
+      - name: Terbitkan ke Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app/build/outputs/apk/debug/*.apk novanet-debug.apk
+          gh release delete latest -y --cleanup-tag || true
+          gh release create latest novanet-debug.apk \
+            --title "Novanet APK terbaru" \
+            --notes "Build otomatis" \
+            --target "$GITHUB_SHA" --latest
