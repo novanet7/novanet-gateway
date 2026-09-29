@@ -18,16 +18,34 @@ jobs:
     timeout-minutes: 30
     env:
       GOOGLE_WEB_CLIENT_ID: ${{ secrets.GOOGLE_WEB_CLIENT_ID }}
+    
+    # PENTING: Jika proyek Anda berada di dalam folder (misal: folder 'Novanet'),
+    # hapus tanda '#' pada baris 'defaults' dan sesuaikan nama foldernya.
+    # defaults:
+    #   run:
+    #     working-directory: ./NamaFolderProyekAnda
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # Langkah tambahan untuk melihat isi folder (Debugging)
+      - name: List files in repository
+        run: |
+          echo "Melihat struktur file di root repositori:"
+          ls -la
+          echo "Mencari file gradlew:"
+          find . -name "gradlew" -maxdepth 3
 
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '21'
-          cache: gradle
+          # CATATAN: 'cache: gradle' dinonaktifkan sementara. 
+          # Jika langkah 'List files' di atas sudah menunjukkan gradlew ada di root, 
+          # Anda bisa mengaktifkan kembali baris di bawah ini dengan menghapus tanda '#'.
+          # cache: gradle
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
@@ -94,4 +112,3 @@ jobs:
           path: fr3velora.apk
           if-no-files-found: error
           retention-days: 30
-          
