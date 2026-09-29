@@ -8,41 +8,111 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: build-apk-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-apk:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
-    steps:
-      - uses: actions/checkout@v4
+    env:
+      GOOGLE_WEB_CLIENT_ID: ${{ secrets.GOOGLE_WEB_CLIENT_ID }}
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
 
-      - uses: actions/setup-java@v4
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Ekstrak fr3velora.zip ke root workspace (app/, gradlew, debug.keystore, dst.)
+      - name: Extract fr3velora.zip
+        run: |
+          if [ -f fr3velora.zip ]; then
+            unzip -q -o fr3velora.zip
+            echo "✅ fr3velora.zip diekstrak"
+          else
+            echo "fr3velora.zip tidak ada, memakai file project langsung dari repo"
+          fi
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '21'
 
-      - name: Install Android SDK
+      - name: Install Android build-tools
         run: |
-          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
-          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-34" "build-tools;34.0.0"
+          export PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin
+          yes | sdkmanager --licenses || true
+          sdkmanager "platforms;android-34" "build-tools;34.0.0"
 
-      # Cari folder project Android otomatis (lokasi gradlew), di root maupun subfolder
+      # Secret DEBUG_KEYSTORE_B64 bersifat opsional; kalau kosong, pakai debug.keystore dari zip/repo
+      - name: Restore debug keystore
+        env:
+          DEBUG_KEYSTORE_B64: ${{ secrets.DEBUG_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$DEBUG_KEYSTORE_B64" ]; then
+            printf '%s' "$DEBUG_KEYSTORE_B64" | tr -d '\r\n ' | base64 --decode > debug.keystore
+            echo "✅ debug.keystore dibuat dari Secret"
+          fi
+          if [ -f debug.keystore ]; then
+            keytool -list -v -keystore debug.keystore -storepass android 2>/dev/null | grep -i 'SHA1:' || true
+          fi
+
+      - name: Prepare Firebase config
+        env:
+          GOOGLE_SERVICES_JSON_B64: ${{ secrets.GOOGLE_SERVICES_JSON_B64 }}
+        run: |
+          if [ -n "$GOOGLE_SERVICES_JSON_B64" ]; then
+            printf '%s' "$GOOGLE_SERVICES_JSON_B64" | base64 --decode > app/google-services.json
+          fi
+          test -f app/google-services.json
+          python3 - <<'PY'
+          import json, os
+          d = json.load(open('app/google-services.json'))
+          names = [c['client_info']['android_client_info']['package_name'] for c in d.get('client', [])]
+          assert 'id.fr3velora' in names, names
+          print('Firebase project:', d['project_info']['project_id'], '| package verified: id.fr3velora')
+          web_ids = [o['client_id'] for c in d.get('client', []) for o in c.get('oauth_client', []) if o.get('client_type') == 3]
+          cid = os.environ.get('GOOGLE_WEB_CLIENT_ID', '')
+          if not any(o.get('client_type') == 1 for c in d.get('client', []) for o in c.get('oauth_client', [])):
+              print('::warning::google-services.json tidak berisi OAuth client Android (SHA-1 belum didaftarkan di Firebase). Login Google berisiko gagal (kode 10).')
+          elif web_ids and cid and cid not in web_ids:
+              print('::warning::GOOGLE_WEB_CLIENT_ID tidak ada di google-services.json (Web client: %s).' % web_ids)
+          PY
+
+      - name: Inject Web Client ID
+        run: |
+          if [ -z "${GOOGLE_WEB_CLIENT_ID// /}" ]; then
+            echo "GOOGLE_WEB_CLIENT_ID kosong, memakai nilai di strings.xml"
+            exit 0
+          fi
+          python3 - <<'PY'
+          import os, re
+          p = 'app/src/main/res/values/strings.xml'
+          s = open(p).read()
+          cid = os.environ['GOOGLE_WEB_CLIENT_ID'].strip()
+          new, n = re.subn(r'(<string name="google_web_client_id"[^>]*>).*?(</string>)',
+                           lambda m: m.group(1) + cid + m.group(2), s)
+          assert n == 1, 'google_web_client_id tidak ditemukan di strings.xml'
+          open(p, 'w').write(new)
+          PY
+          grep -c 'apps.googleusercontent.com' app/src/main/res/values/strings.xml
+
       - name: Build APK
         run: |
-          GRADLEW=$(find . -name gradlew -not -path './.git/*' -print -quit)
-          if [ -z "$GRADLEW" ]; then
-            echo "::error::gradlew tidak ada di repo ini. Isi repo:"
-            ls -la
-            exit 1
-          fi
-          cd "$(dirname "$GRADLEW")"
-          echo "Project Android: $(pwd)"
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon
-          cp app/build/outputs/apk/debug/app-debug.apk "$GITHUB_WORKSPACE/fr3velora.apk"
+          cp app/build/outputs/apk/debug/app-debug.apk fr3velora.apk
+          echo "=== Verifikasi APK ==="
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs fr3velora.apk | grep -i 'SHA-1' || true
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
         with:
           name: fr3velora
           path: fr3velora.apk
           if-no-files-found: error
+          retention-days: 30
