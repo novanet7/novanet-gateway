@@ -26,15 +26,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # LANGKAH DEBUGGING: Mencari file di seluruh folder
-      - name: Debug - Find important files
+      # DEBUGGING MENDALAM: Mencari file di seluruh sudut repositori
+      - name: Deep Debug - Find important files
         run: |
-          echo "=== 1. Melihat isi folder root ==="
+          echo "=== 1. Struktur Root ==="
           ls -la
-          echo "=== 2. Mencari file debug.keystore di seluruh folder ==="
-          find . -name "debug.keystore" -o -name "*.jks" 2>/dev/null || echo "debug.keystore TIDAK DITEMUKAN"
-          echo "=== 3. Mencari file gradlew di seluruh folder ==="
-          find . -name "gradlew" 2>/dev/null || echo "gradlew TIDAK DITEMUKAN"
+          echo "=== 2. Mencari debug.keystore di SELURUH folder ==="
+          find . -name "debug.keystore" -o -name "*.jks" 2>/dev/null || echo "❌ debug.keystore TIDAK DITEMUKAN DI REPOSITORI"
+          echo "=== 3. Mencari gradlew di SELURUH folder ==="
+          find . -name "gradlew" 2>/dev/null || echo "❌ gradlew TIDAK DITEMUKAN DI REPOSITORI"
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -48,26 +48,35 @@ jobs:
           yes | sdkmanager --licenses || true
           sdkmanager "platforms;android-34" "build-tools;34.0.0"
 
-      # MEMBUAT ULANG KEYSTORE DARI SECRET
+      # MEMULIHKAN KEYSTORE ASLI DARI SECRET
       - name: Restore debug keystore from Secret
         env:
           DEBUG_KEYSTORE_B64: ${{ secrets.DEBUG_KEYSTORE_B64 }}
         run: |
           if [ -n "$DEBUG_KEYSTORE_B64" ]; then
+            echo "✅ Membuat debug.keystore dari GitHub Secret..."
             echo "$DEBUG_KEYSTORE_B64" | base64 --decode > debug.keystore
-            echo "Berhasil membuat file debug.keystore dari Secret."
           else
-            echo "::warning::Secret DEBUG_KEYSTORE_B64 kosong. Build akan menggunakan keystore bawaan Gradle (SHA-1 mungkin berbeda)."
+            echo "❌ ERROR FATAL: Secret DEBUG_KEYSTORE_B64 tidak ditemukan!"
+            echo "Anda harus mengatur Secret tersebut agar SHA-1 tidak berubah."
+            exit 1
           fi
 
-      # VERIFIKASI (Hanya memberi peringatan jika gagal, tidak menghentikan build)
-      - name: Verify fixed signing keystore
+      # VERIFIKASI KETAT: Jika SHA-1 salah, build dihentikan!
+      - name: Verify fixed signing keystore (STRICT)
         run: |
-          if [ -f debug.keystore ]; then
-            echo "File debug.keystore ditemukan. Memverifikasi SHA-1..."
-            keytool -list -v -keystore debug.keystore -storepass android | grep -F 'SHA1: 14:75:B7:63:64:FD:BE:B5:67:04:B8:CA:88:40:A0:C6:66:B1:CA:55' || echo "::warning::SHA-1 keystore tidak cocok! Build mungkin gagal untuk Firebase/Google Sign-In."
+          echo "=== Memverifikasi SHA-1 Keystore ==="
+          SHA1_OUTPUT=$(keytool -list -v -keystore debug.keystore -storepass android | grep -i 'SHA1:')
+          echo "SHA-1 yang ditemukan: $SHA1_OUTPUT"
+          
+          if echo "$SHA1_OUTPUT" | grep -q '14:75:B7:63:64:FD:BE:B5:67:04:B8:CA:88:40:A0:C6:66:B1:CA:55'; then
+            echo "✅ SHA-1 COCOK! Melanjutkan build."
           else
-            echo "::warning::debug.keystore tidak ditemukan. Melewati verifikasi."
+            echo "❌ ERROR FATAL: SHA-1 TIDAK COCOK!"
+            echo "Diharapkan: 14:75:B7:63:64:FD:BE:B5:67:04:B8:CA:88:40:A0:C6:66:B1:CA:55"
+            echo "Ditemukan:  $SHA1_OUTPUT"
+            echo "Pastikan file debug.keystore yang Anda upload ke Secret adalah file yang benar."
+            exit 1
           fi
 
       - name: Prepare Firebase config
@@ -112,7 +121,8 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon
           cp app/build/outputs/apk/debug/app-debug.apk fr3velora.apk
-          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs fr3velora.apk | grep -i 'SHA-1'
+          echo "=== Verifikasi APK ==="
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs fr3velora.apk | grep -i 'SHA-1' || true
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
