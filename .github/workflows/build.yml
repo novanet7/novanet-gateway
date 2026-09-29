@@ -16,6 +16,8 @@ jobs:
   build-apk:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    
+    # Set environment variables untuk Android SDK
     env:
       GOOGLE_WEB_CLIENT_ID: ${{ secrets.GOOGLE_WEB_CLIENT_ID }}
       ANDROID_HOME: /usr/local/lib/android/sdk
@@ -25,28 +27,31 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Langkah tambahan untuk melihat isi folder (Debugging)
+      # LANGKAH PENTING: Melihat struktur file untuk debugging
       - name: List files in repository
         run: |
-          echo "Melihat struktur file di root repositori:"
+          echo "=== Struktur File di Root ==="
           ls -la
-          echo "Mencari file gradlew:"
+          echo "=== Mencari file gradlew ==="
           find . -name "gradlew" -maxdepth 3
+          echo "=== Mencari file build.gradle ==="
+          find . -name "build.gradle*" -maxdepth 3
 
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '21'
-          # cache: gradle # Biarkan nonaktif dulu sampai struktur folder dipastikan benar
+          # cache: gradle # Sengaja dinonaktifkan dulu untuk menghindari error di awal
 
-      # Langkah 'Set up Android SDK' DIHAPUS karena runner ubuntu-latest sudah menyediakannya.
-      # Kita langsung install build-tools yang dibutuhkan.
-
+      # Memperbaiki error 'sdkmanager: command not found'
       - name: Install Android build-tools
         run: |
-          # Menggunakan 'yes' untuk otomatis menyetujui lisensi SDK
-          yes | sdkmanager "platforms;android-34" "build-tools;34.0.0"
+          export PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin
+          echo "Menerima lisensi SDK..."
+          yes | sdkmanager --licenses || true
+          echo "Menginstal platform dan build-tools..."
+          sdkmanager "platforms;android-34" "build-tools;34.0.0"
 
       - name: Verify fixed signing keystore
         run: |
@@ -57,7 +62,6 @@ jobs:
         env:
           GOOGLE_SERVICES_JSON_B64: ${{ secrets.GOOGLE_SERVICES_JSON_B64 }}
         run: |
-          # Secret (jika ada) menimpa file google-services.json yang ada di repo.
           if [ -n "$GOOGLE_SERVICES_JSON_B64" ]; then
             printf '%s' "$GOOGLE_SERVICES_JSON_B64" | base64 --decode > app/google-services.json
           fi
