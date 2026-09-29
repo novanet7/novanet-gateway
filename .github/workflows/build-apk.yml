@@ -6,7 +6,7 @@ on:
     branches: [ main ]
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: build-apk-${{ github.ref }}
@@ -116,4 +116,16 @@ jobs:
           archive: false
           if-no-files-found: error
           retention-days: 30
-          
+
+      # Release tetap: URL download selalu sama dan menunjuk ke APK terbaru
+      - name: Publish Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest fr3velora.apk \
+            --title "fr3velora" \
+            --notes "Build otomatis dari commit $GITHUB_SHA" \
+            --target "$GITHUB_SHA" \
+            --latest
+            
