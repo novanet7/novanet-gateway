@@ -1,37 +1,97 @@
 name: Build APK
+
 on:
-  push:
   workflow_dispatch:
+  push:
+    branches: [ main ]
+
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: build-apk-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build:
+  build-apk:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GOOGLE_WEB_CLIENT_ID: ${{ secrets.GOOGLE_WEB_CLIENT_ID }}
     steps:
-      - uses: actions/checkout@v4
-      - name: Ekstrak ZIP proyek
-        run: for z in *.zip; do unzip -oq "$z"; done
-      - uses: actions/setup-java@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 17
-      - name: Terima lisensi Android SDK
-        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: 8.4
-      - run: gradle :app:assembleDebug --stacktrace
-      - uses: actions/upload-artifact@v4
-        with:
-          name: novanet-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
-      - name: Terbitkan ke Releases
-        env:
-          GH_TOKEN: ${{ github.token }}
+          java-version: '21'
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android build-tools
+        run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Verify fixed signing keystore
         run: |
-          cp app/build/outputs/apk/debug/*.apk novanet-debug.apk
-          gh release delete latest -y --cleanup-tag || true
-          gh release create latest novanet-debug.apk \
-            --title "Novanet APK terbaru" \
-            --notes "Build otomatis" \
-            --target "$GITHUB_SHA" --latest
+          test -f debug.keystore
+          keytool -list -v -keystore debug.keystore -storepass android | grep -F 'SHA1: 14:75:B7:63:64:FD:BE:B5:67:04:B8:CA:88:40:A0:C6:66:B1:CA:55'
+
+      - name: Prepare Firebase config
+        env:
+          GOOGLE_SERVICES_JSON_B64: ${{ secrets.GOOGLE_SERVICES_JSON_B64 }}
+        run: |
+          # Secret (jika ada) menimpa file google-services.json yang ada di repo.
+          if [ -n "$GOOGLE_SERVICES_JSON_B64" ]; then
+            printf '%s' "$GOOGLE_SERVICES_JSON_B64" | base64 --decode > app/google-services.json
+          fi
+          test -f app/google-services.json
+          python3 - <<'PY'
+          import json, os
+          d = json.load(open('app/google-services.json'))
+          names = [c['client_info']['android_client_info']['package_name'] for c in d.get('client', [])]
+          assert 'id.fr3velora' in names, names
+          print('Firebase project:', d['project_info']['project_id'], '| package verified: id.fr3velora')
+          web_ids = [o['client_id'] for c in d.get('client', []) for o in c.get('oauth_client', []) if o.get('client_type') == 3]
+          cid = os.environ.get('GOOGLE_WEB_CLIENT_ID', '')
+          if not any(o.get('client_type') == 1 for c in d.get('client', []) for o in c.get('oauth_client', [])):
+              print('::warning::google-services.json tidak berisi OAuth client Android (SHA-1 belum didaftarkan di Firebase). Login Google berisiko gagal (kode 10).')
+          elif web_ids and cid not in web_ids:
+              print('::warning::GOOGLE_WEB_CLIENT_ID tidak ada di google-services.json (Web client: %s).' % web_ids)
+          PY
+
+      - name: Inject Web Client ID
+        run: |
+          test -n "$GOOGLE_WEB_CLIENT_ID"
+          python3 - <<'PY'
+          import os, re
+          p = 'app/src/main/res/values/strings.xml'
+          s = open(p).read()
+          cid = os.environ['GOOGLE_WEB_CLIENT_ID'].strip()
+          # Pakai fungsi sebagai pengganti: Client ID diawali angka, jadi template r'\1'+cid
+          # akan terbaca sebagai backreference (\11 dst) dan merusak strings.xml.
+          new, n = re.subn(r'(<string name="google_web_client_id"[^>]*>).*?(</string>)',
+                           lambda m: m.group(1) + cid + m.group(2), s)
+          assert n == 1, 'google_web_client_id tidak ditemukan di strings.xml'
+          open(p, 'w').write(new)
+          PY
+          grep -c 'apps.googleusercontent.com' app/src/main/res/values/strings.xml
+
+      - name: Build APK
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+          cp app/build/outputs/apk/debug/app-debug.apk fr3velora.apk
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs fr3velora.apk | grep -i 'SHA-1'
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: fr3velora
+          path: fr3velora.apk
+          if-no-files-found: error
+          retention-days: 30
+          
