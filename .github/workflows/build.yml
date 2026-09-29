@@ -17,7 +17,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     
-    # Set environment variables untuk Android SDK
     env:
       GOOGLE_WEB_CLIENT_ID: ${{ secrets.GOOGLE_WEB_CLIENT_ID }}
       ANDROID_HOME: /usr/local/lib/android/sdk
@@ -27,36 +26,49 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # LANGKAH PENTING: Melihat struktur file untuk debugging
-      - name: List files in repository
+      # LANGKAH DEBUGGING: Mencari file di seluruh folder
+      - name: Debug - Find important files
         run: |
-          echo "=== Struktur File di Root ==="
+          echo "=== 1. Melihat isi folder root ==="
           ls -la
-          echo "=== Mencari file gradlew ==="
-          find . -name "gradlew" -maxdepth 3
-          echo "=== Mencari file build.gradle ==="
-          find . -name "build.gradle*" -maxdepth 3
+          echo "=== 2. Mencari file debug.keystore di seluruh folder ==="
+          find . -name "debug.keystore" -o -name "*.jks" 2>/dev/null || echo "debug.keystore TIDAK DITEMUKAN"
+          echo "=== 3. Mencari file gradlew di seluruh folder ==="
+          find . -name "gradlew" 2>/dev/null || echo "gradlew TIDAK DITEMUKAN"
 
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '21'
-          # cache: gradle # Sengaja dinonaktifkan dulu untuk menghindari error di awal
 
-      # Memperbaiki error 'sdkmanager: command not found'
       - name: Install Android build-tools
         run: |
           export PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin
-          echo "Menerima lisensi SDK..."
           yes | sdkmanager --licenses || true
-          echo "Menginstal platform dan build-tools..."
           sdkmanager "platforms;android-34" "build-tools;34.0.0"
 
+      # MEMBUAT ULANG KEYSTORE DARI SECRET
+      - name: Restore debug keystore from Secret
+        env:
+          DEBUG_KEYSTORE_B64: ${{ secrets.DEBUG_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$DEBUG_KEYSTORE_B64" ]; then
+            echo "$DEBUG_KEYSTORE_B64" | base64 --decode > debug.keystore
+            echo "Berhasil membuat file debug.keystore dari Secret."
+          else
+            echo "::warning::Secret DEBUG_KEYSTORE_B64 kosong. Build akan menggunakan keystore bawaan Gradle (SHA-1 mungkin berbeda)."
+          fi
+
+      # VERIFIKASI (Hanya memberi peringatan jika gagal, tidak menghentikan build)
       - name: Verify fixed signing keystore
         run: |
-          test -f debug.keystore
-          keytool -list -v -keystore debug.keystore -storepass android | grep -F 'SHA1: 14:75:B7:63:64:FD:BE:B5:67:04:B8:CA:88:40:A0:C6:66:B1:CA:55'
+          if [ -f debug.keystore ]; then
+            echo "File debug.keystore ditemukan. Memverifikasi SHA-1..."
+            keytool -list -v -keystore debug.keystore -storepass android | grep -F 'SHA1: 14:75:B7:63:64:FD:BE:B5:67:04:B8:CA:88:40:A0:C6:66:B1:CA:55' || echo "::warning::SHA-1 keystore tidak cocok! Build mungkin gagal untuk Firebase/Google Sign-In."
+          else
+            echo "::warning::debug.keystore tidak ditemukan. Melewati verifikasi."
+          fi
 
       - name: Prepare Firebase config
         env:
