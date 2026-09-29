@@ -18,12 +18,8 @@ jobs:
     timeout-minutes: 30
     env:
       GOOGLE_WEB_CLIENT_ID: ${{ secrets.GOOGLE_WEB_CLIENT_ID }}
-    
-    # PENTING: Jika proyek Anda berada di dalam folder (misal: folder 'Novanet'),
-    # hapus tanda '#' pada baris 'defaults' dan sesuaikan nama foldernya.
-    # defaults:
-    #   run:
-    #     working-directory: ./NamaFolderProyekAnda
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
 
     steps:
       - name: Checkout
@@ -42,16 +38,15 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
-          # CATATAN: 'cache: gradle' dinonaktifkan sementara. 
-          # Jika langkah 'List files' di atas sudah menunjukkan gradlew ada di root, 
-          # Anda bisa mengaktifkan kembali baris di bawah ini dengan menghapus tanda '#'.
-          # cache: gradle
+          # cache: gradle # Biarkan nonaktif dulu sampai struktur folder dipastikan benar
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      # Langkah 'Set up Android SDK' DIHAPUS karena runner ubuntu-latest sudah menyediakannya.
+      # Kita langsung install build-tools yang dibutuhkan.
 
       - name: Install Android build-tools
-        run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
+        run: |
+          # Menggunakan 'yes' untuk otomatis menyetujui lisensi SDK
+          yes | sdkmanager "platforms;android-34" "build-tools;34.0.0"
 
       - name: Verify fixed signing keystore
         run: |
@@ -89,8 +84,6 @@ jobs:
           p = 'app/src/main/res/values/strings.xml'
           s = open(p).read()
           cid = os.environ['GOOGLE_WEB_CLIENT_ID'].strip()
-          # Pakai fungsi sebagai pengganti: Client ID diawali angka, jadi template r'\1'+cid
-          # akan terbaca sebagai backreference (\11 dst) dan merusak strings.xml.
           new, n = re.subn(r'(<string name="google_web_client_id"[^>]*>).*?(</string>)',
                            lambda m: m.group(1) + cid + m.group(2), s)
           assert n == 1, 'google_web_client_id tidak ditemukan di strings.xml'
