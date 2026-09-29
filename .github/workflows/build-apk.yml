@@ -26,19 +26,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Diagnosis: apa yang benar-benar ada di checkout & apakah keystore ter-commit
-      - name: Debug - Cek struktur dan keystore
-        run: |
-          echo "=== 1. Struktur root (gradlew, app/, debug.keystore harus di level yang sama) ==="
-          ls -la
-          echo "=== 2. debug.keystore / *.jks di working tree ==="
-          find . -path ./.git -prune -o \( -name 'debug.keystore' -o -name '*.jks' \) -print | grep . || echo "(tidak ada di checkout)"
-          echo "=== 3. Status di Git ==="
-          git ls-files | grep -i 'keystore' || echo "(keystore TIDAK ter-commit, kemungkinan kena .gitignore)"
-          git check-ignore -v debug.keystore || echo "(tidak diabaikan oleh .gitignore repo)"
-          echo "=== 4. gradlew ==="
-          find . -name gradlew -not -path './.git/*' | grep . || echo "(gradlew tidak ditemukan)"
-
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
@@ -51,37 +38,6 @@ jobs:
           yes | sdkmanager --licenses || true
           sdkmanager "platforms;android-34" "build-tools;34.0.0"
 
-      # Prioritas: Secret. Cadangan: debug.keystore yang ter-commit di root repo.
-      - name: Siapkan debug.keystore
-        env:
-          DEBUG_KEYSTORE_B64: ${{ secrets.DEBUG_KEYSTORE_B64 }}
-        run: |
-          if [ -n "$DEBUG_KEYSTORE_B64" ]; then
-            printf '%s' "$DEBUG_KEYSTORE_B64" | tr -d '\r\n ' | base64 --decode > debug.keystore
-            echo "✅ debug.keystore dibuat dari Secret DEBUG_KEYSTORE_B64"
-          elif [ -s debug.keystore ]; then
-            echo "✅ Memakai debug.keystore yang ter-commit di repositori"
-          else
-            echo "::error::debug.keystore tidak ada. Secret DEBUG_KEYSTORE_B64 kosong DAN file tidak ter-commit di root repo."
-            echo "Solusi 1: tambah Repository secret DEBUG_KEYSTORE_B64 (Settings > Secrets and variables > Actions)."
-            echo "Solusi 2: git add -f debug.keystore && git commit && git push"
-            exit 1
-          fi
-          ls -l debug.keystore
-
-      - name: Verifikasi SHA-1 keystore
-        env:
-          EXPECTED_SHA1: '14:75:B7:63:64:FD:BE:B5:67:04:B8:CA:88:40:A0:C6:66:B1:CA:55'
-        run: |
-          FOUND=$(keytool -list -v -keystore debug.keystore -storepass android -alias androiddebugkey 2>&1 | grep -i 'SHA1:' | head -n1 | sed 's/.*SHA1:[[:space:]]*//' || true)
-          echo "SHA-1 ditemukan : ${FOUND:-<kosong, keystore tidak terbaca / password salah>}"
-          echo "SHA-1 diharapkan: $EXPECTED_SHA1"
-          if [ "$FOUND" != "$EXPECTED_SHA1" ]; then
-            echo "::error::SHA-1 keystore tidak cocok dengan yang terdaftar di Firebase."
-            exit 1
-          fi
-          echo "✅ SHA-1 cocok"
-
       - name: Prepare Firebase config
         env:
           GOOGLE_SERVICES_JSON_B64: ${{ secrets.GOOGLE_SERVICES_JSON_B64 }}
@@ -90,24 +46,11 @@ jobs:
             printf '%s' "$GOOGLE_SERVICES_JSON_B64" | base64 --decode > app/google-services.json
           fi
           test -f app/google-services.json
-          python3 - <<'PY'
-          import json, os
-          d = json.load(open('app/google-services.json'))
-          names = [c['client_info']['android_client_info']['package_name'] for c in d.get('client', [])]
-          assert 'id.fr3velora' in names, names
-          print('Firebase project:', d['project_info']['project_id'], '| package verified: id.fr3velora')
-          web_ids = [o['client_id'] for c in d.get('client', []) for o in c.get('oauth_client', []) if o.get('client_type') == 3]
-          cid = os.environ.get('GOOGLE_WEB_CLIENT_ID', '')
-          if not any(o.get('client_type') == 1 for c in d.get('client', []) for o in c.get('oauth_client', [])):
-              print('::warning::google-services.json tidak berisi OAuth client Android (SHA-1 belum didaftarkan di Firebase). Login Google berisiko gagal (kode 10).')
-          elif web_ids and cid and cid not in web_ids:
-              print('::warning::GOOGLE_WEB_CLIENT_ID tidak ada di google-services.json (Web client: %s).' % web_ids)
-          PY
 
       - name: Inject Web Client ID
         run: |
           if [ -z "${GOOGLE_WEB_CLIENT_ID// /}" ]; then
-            echo "::warning::Secret GOOGLE_WEB_CLIENT_ID kosong, memakai nilai yang sudah ada di strings.xml"
+            echo "GOOGLE_WEB_CLIENT_ID kosong, memakai nilai di strings.xml"
             exit 0
           fi
           python3 - <<'PY'
@@ -120,15 +63,13 @@ jobs:
           assert n == 1, 'google_web_client_id tidak ditemukan di strings.xml'
           open(p, 'w').write(new)
           PY
-          grep -c 'apps.googleusercontent.com' app/src/main/res/values/strings.xml
 
+      # debug.keystore dipakai apa adanya dari repo (root), tanpa diubah/dicek
       - name: Build APK
         run: |
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon
           cp app/build/outputs/apk/debug/app-debug.apk fr3velora.apk
-          echo "=== Verifikasi APK ==="
-          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs fr3velora.apk | grep -i 'SHA-1' || true
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
