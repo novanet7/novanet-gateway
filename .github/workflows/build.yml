@@ -16,7 +16,7 @@ jobs:
   build-apk:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    
+
     env:
       GOOGLE_WEB_CLIENT_ID: ${{ secrets.GOOGLE_WEB_CLIENT_ID }}
       ANDROID_HOME: /usr/local/lib/android/sdk
@@ -26,15 +26,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # DEBUGGING MENDALAM: Mencari file di seluruh sudut repositori
-      - name: Deep Debug - Find important files
+      # Diagnosis: apa yang benar-benar ada di checkout & apakah keystore ter-commit
+      - name: Debug - Cek struktur dan keystore
         run: |
-          echo "=== 1. Struktur Root ==="
+          echo "=== 1. Struktur root (gradlew, app/, debug.keystore harus di level yang sama) ==="
           ls -la
-          echo "=== 2. Mencari debug.keystore di SELURUH folder ==="
-          find . -name "debug.keystore" -o -name "*.jks" 2>/dev/null || echo "❌ debug.keystore TIDAK DITEMUKAN DI REPOSITORI"
-          echo "=== 3. Mencari gradlew di SELURUH folder ==="
-          find . -name "gradlew" 2>/dev/null || echo "❌ gradlew TIDAK DITEMUKAN DI REPOSITORI"
+          echo "=== 2. debug.keystore / *.jks di working tree ==="
+          find . -path ./.git -prune -o \( -name 'debug.keystore' -o -name '*.jks' \) -print | grep . || echo "(tidak ada di checkout)"
+          echo "=== 3. Status di Git ==="
+          git ls-files | grep -i 'keystore' || echo "(keystore TIDAK ter-commit, kemungkinan kena .gitignore)"
+          git check-ignore -v debug.keystore || echo "(tidak diabaikan oleh .gitignore repo)"
+          echo "=== 4. gradlew ==="
+          find . -name gradlew -not -path './.git/*' | grep . || echo "(gradlew tidak ditemukan)"
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -48,36 +51,36 @@ jobs:
           yes | sdkmanager --licenses || true
           sdkmanager "platforms;android-34" "build-tools;34.0.0"
 
-      # MEMULIHKAN KEYSTORE ASLI DARI SECRET
-      - name: Restore debug keystore from Secret
+      # Prioritas: Secret. Cadangan: debug.keystore yang ter-commit di root repo.
+      - name: Siapkan debug.keystore
         env:
           DEBUG_KEYSTORE_B64: ${{ secrets.DEBUG_KEYSTORE_B64 }}
         run: |
           if [ -n "$DEBUG_KEYSTORE_B64" ]; then
-            echo "✅ Membuat debug.keystore dari GitHub Secret..."
-            echo "$DEBUG_KEYSTORE_B64" | base64 --decode > debug.keystore
+            printf '%s' "$DEBUG_KEYSTORE_B64" | tr -d '\r\n ' | base64 --decode > debug.keystore
+            echo "✅ debug.keystore dibuat dari Secret DEBUG_KEYSTORE_B64"
+          elif [ -s debug.keystore ]; then
+            echo "✅ Memakai debug.keystore yang ter-commit di repositori"
           else
-            echo "❌ ERROR FATAL: Secret DEBUG_KEYSTORE_B64 tidak ditemukan!"
-            echo "Anda harus mengatur Secret tersebut agar SHA-1 tidak berubah."
+            echo "::error::debug.keystore tidak ada. Secret DEBUG_KEYSTORE_B64 kosong DAN file tidak ter-commit di root repo."
+            echo "Solusi 1: tambah Repository secret DEBUG_KEYSTORE_B64 (Settings > Secrets and variables > Actions)."
+            echo "Solusi 2: git add -f debug.keystore && git commit && git push"
             exit 1
           fi
+          ls -l debug.keystore
 
-      # VERIFIKASI KETAT: Jika SHA-1 salah, build dihentikan!
-      - name: Verify fixed signing keystore (STRICT)
+      - name: Verifikasi SHA-1 keystore
+        env:
+          EXPECTED_SHA1: '14:75:B7:63:64:FD:BE:B5:67:04:B8:CA:88:40:A0:C6:66:B1:CA:55'
         run: |
-          echo "=== Memverifikasi SHA-1 Keystore ==="
-          SHA1_OUTPUT=$(keytool -list -v -keystore debug.keystore -storepass android | grep -i 'SHA1:')
-          echo "SHA-1 yang ditemukan: $SHA1_OUTPUT"
-          
-          if echo "$SHA1_OUTPUT" | grep -q '14:75:B7:63:64:FD:BE:B5:67:04:B8:CA:88:40:A0:C6:66:B1:CA:55'; then
-            echo "✅ SHA-1 COCOK! Melanjutkan build."
-          else
-            echo "❌ ERROR FATAL: SHA-1 TIDAK COCOK!"
-            echo "Diharapkan: 14:75:B7:63:64:FD:BE:B5:67:04:B8:CA:88:40:A0:C6:66:B1:CA:55"
-            echo "Ditemukan:  $SHA1_OUTPUT"
-            echo "Pastikan file debug.keystore yang Anda upload ke Secret adalah file yang benar."
+          FOUND=$(keytool -list -v -keystore debug.keystore -storepass android -alias androiddebugkey 2>&1 | grep -i 'SHA1:' | head -n1 | sed 's/.*SHA1:[[:space:]]*//' || true)
+          echo "SHA-1 ditemukan : ${FOUND:-<kosong, keystore tidak terbaca / password salah>}"
+          echo "SHA-1 diharapkan: $EXPECTED_SHA1"
+          if [ "$FOUND" != "$EXPECTED_SHA1" ]; then
+            echo "::error::SHA-1 keystore tidak cocok dengan yang terdaftar di Firebase."
             exit 1
           fi
+          echo "✅ SHA-1 cocok"
 
       - name: Prepare Firebase config
         env:
@@ -97,13 +100,16 @@ jobs:
           cid = os.environ.get('GOOGLE_WEB_CLIENT_ID', '')
           if not any(o.get('client_type') == 1 for c in d.get('client', []) for o in c.get('oauth_client', [])):
               print('::warning::google-services.json tidak berisi OAuth client Android (SHA-1 belum didaftarkan di Firebase). Login Google berisiko gagal (kode 10).')
-          elif web_ids and cid not in web_ids:
+          elif web_ids and cid and cid not in web_ids:
               print('::warning::GOOGLE_WEB_CLIENT_ID tidak ada di google-services.json (Web client: %s).' % web_ids)
           PY
 
       - name: Inject Web Client ID
         run: |
-          test -n "$GOOGLE_WEB_CLIENT_ID"
+          if [ -z "${GOOGLE_WEB_CLIENT_ID// /}" ]; then
+            echo "::warning::Secret GOOGLE_WEB_CLIENT_ID kosong, memakai nilai yang sudah ada di strings.xml"
+            exit 0
+          fi
           python3 - <<'PY'
           import os, re
           p = 'app/src/main/res/values/strings.xml'
@@ -131,3 +137,4 @@ jobs:
           path: fr3velora.apk
           if-no-files-found: error
           retention-days: 30
+          
