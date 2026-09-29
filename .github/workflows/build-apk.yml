@@ -105,15 +105,15 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon
-          cp app/build/outputs/apk/debug/app-debug.apk fr3velora.apk
+          mv app/build/outputs/apk/debug/app-debug.apk fr3velora.apk
           echo "=== Verifikasi APK ==="
           "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs fr3velora.apk | grep -i 'SHA-1' || true
 
       - name: Upload APK
         uses: actions/upload-artifact@v7
         with:
-          name: fr3velora
           path: fr3velora.apk
+          archive: false
           if-no-files-found: error
           retention-days: 30
           
