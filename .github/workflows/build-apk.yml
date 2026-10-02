@@ -10,6 +10,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     # TAMBAHKAN BLOK ENV INI UNTUK MENGATASI ERROR SECRETS DI IF
     env:
       KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
@@ -96,6 +98,23 @@ jobs:
           name: app-debug
           path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+
+      - name: Publish APK ke Release (latest)
+        if: ${{ github.event_name != 'pull_request' }}
+        working-directory: ${{ env.PROJECT_DIR }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          APK=$(ls app/build/outputs/apk/debug/*.apk | head -1)
+          cp "$APK" fr3velora.apk
+          gh release delete latest --cleanup-tag -y --repo "$GITHUB_REPOSITORY" || true
+          gh release create latest fr3velora.apk \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "fr3velora" \
+            --notes "Build otomatis dari commit ${GITHUB_SHA::7}" \
+            --latest
 
       - name: Decode keystore (optional release)
         # UBAH DARI secrets MENJADI env
